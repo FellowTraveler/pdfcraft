@@ -90,6 +90,191 @@ fn open_prepare_keeps_control_and_existing_tabs_live_until_atomic_commit() {
 }
 
 #[test]
+fn inline_failed_tool_open_does_not_steal_an_existing_password_prompt() {
+    let mut doc = pdfcraft_cos::Document::open(Arc::new(fixture(2))).unwrap();
+    doc.set_encryption(&pdfcraft_cos::NewEncryption {
+        algorithm: pdfcraft_cos::Algorithm::Aes256,
+        user_password: "reader",
+        owner_password: "owner",
+        permissions: -4,
+        encrypt_metadata: true,
+        seed: [4; 32],
+    })
+    .unwrap();
+    let bytes = pdfcraft_cos::write_full(&doc, &Default::default()).unwrap();
+    let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    let path = std::env::temp_dir().join(format!("pdfcraft-inline-owner-{}-{nonce}.pdf", std::process::id()));
+    assert!(!path.exists(), "the new opening attempt must fail reading");
+    let mut h = Harness::builder().with_size(egui::vec2(1000.0, 700.0)).build_eframe(|_| {
+        let mut app = PdfCraftApp::new();
+        app.set_option("language", "en").unwrap();
+        app.run_inline = true;
+        app.open_bytes("locked.pdf", Some(path.to_string_lossy().into_owned()), bytes).unwrap();
+        app.pick_override = Some(vec![path.to_string_lossy().into_owned()]);
+        app
+    });
+    h.step();
+    let cached = h.state().password_prompt.as_ref().unwrap().bytes.clone();
+    assert!(h.state().password_prompt.as_ref().unwrap().then.is_none());
+    h.state_mut().run_command("export.text");
+    h.step();
+    assert!(h.state().toast.as_ref().is_some_and(|toast| toast.0.starts_with("Couldn't read")));
+    let prompt = h.state().password_prompt.as_ref().unwrap();
+    assert!(Arc::ptr_eq(&prompt.bytes, &cached), "the older encrypted bytes remain available");
+    assert!(prompt.then.is_none(), "a failed attempt must not attach its tool to the older prompt");
+    h.state_mut().submit_password(Some("wrong".into()));
+    assert!(h.state().password_prompt.as_ref().unwrap().then.is_none());
+    h.state_mut().submit_password(Some("reader".into()));
+    assert_eq!(h.state().views.len(), 1, "the older document can still be unlocked");
+    assert!(h.state().password_prompt.is_none());
+    h.run_steps(2);
+    assert!(h.state().dialog.is_none(), "the failed attempt's tool never runs");
+
+    // Accepting the current attempt must still run ordinary/conversion tools and retain
+    // newly created password continuations through retries or discard them on cancellation.
+    for case in ["plain", "converted", "password", "password-cancel"] {
+        let path = path.with_extension(if case == "converted" { "txt" } else { "pdf" });
+        let bytes = match case {
+            "plain" => fixture(2),
+            "converted" => b"Inline text converted to PDF".to_vec(),
+            _ => cached.as_ref().clone(),
+        };
+        std::fs::write(&path, bytes).unwrap();
+        let mut h = Harness::builder().with_size(egui::vec2(1000.0, 700.0)).build_eframe(|_| {
+            let mut app = PdfCraftApp::new();
+            app.set_option("language", "en").unwrap();
+            app.run_inline = true;
+            app.pick_override = Some(vec![path.to_string_lossy().into_owned()]);
+            app
+        });
+        h.step();
+        let defaults = h.state().persist();
+        h.state_mut().run_command("export.text");
+        h.step();
+        if case.starts_with("password") {
+            assert_eq!(h.state().password_prompt.as_ref().unwrap().then, Some("export.text"));
+            h.state_mut().submit_password(Some("wrong".into()));
+            assert_eq!(h.state().password_prompt.as_ref().unwrap().then, Some("export.text"));
+            h.state_mut().submit_password((case == "password").then(|| "reader".into()));
+        }
+        assert_eq!(h.state().views.len(), usize::from(case != "password-cancel"));
+        assert_eq!(matches!(h.state().dialog, Some(crate::Dialog::Export(_))), case != "password-cancel");
+        assert!(h.state().password_prompt.is_none());
+        assert_eq!(h.state().view_defaults.layout, PdfCraftApp::new().view_defaults.layout);
+        assert_eq!(h.state().view_defaults.continuous, PdfCraftApp::new().view_defaults.continuous);
+        // Persistence includes recent files; compare only the saved display defaults.
+        let before: Value = serde_json::from_str(&defaults).unwrap();
+        let after: Value = serde_json::from_str(&h.state().persist()).unwrap();
+        assert_eq!(before["default_layout"], after["default_layout"]);
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+#[test]
+fn tool_open_continuation_follows_its_worker_and_password_retries() {
+    for case in ["plain", "converted", "invalid-image", "password", "password-cancel", "wrong-password-cancel", "read-failure", "invalid-pdf"] {
+        let extension = match case {
+            "converted" => "txt",
+            "invalid-image" => "png",
+            _ => "pdf",
+        };
+        let path = std::env::temp_dir().join(format!("pdfcraft-tool-worker-{}-{case}.{extension}", std::process::id()));
+        let encrypted = case.contains("password");
+        if case != "read-failure" {
+            let bytes = if encrypted {
+                let mut doc = pdfcraft_cos::Document::open(Arc::new(fixture(2))).unwrap();
+                doc.set_encryption(&pdfcraft_cos::NewEncryption {
+                    algorithm: pdfcraft_cos::Algorithm::Aes256,
+                    user_password: "reader",
+                    owner_password: "owner",
+                    permissions: -4,
+                    encrypt_metadata: true,
+                    seed: [4; 32],
+                })
+                .unwrap();
+                pdfcraft_cos::write_full(&doc, &Default::default()).unwrap()
+            } else if case == "converted" {
+                b"A text file opened as a PDF".to_vec()
+            } else if case == "invalid-image" {
+                b"\x89PNG\r\n\x1a\n".to_vec()
+            } else if case == "invalid-pdf" {
+                b"not a PDF".to_vec()
+            } else {
+                fixture(2)
+            };
+            std::fs::write(&path, bytes).unwrap();
+        }
+        let mut h = Harness::builder().with_size(egui::vec2(1000.0, 700.0)).build_eframe(|_| {
+            let mut app = PdfCraftApp::new();
+            app.set_option("language", "en").unwrap();
+            app.pick_override = Some(vec![path.to_string_lossy().into_owned()]);
+            app
+        });
+        h.step();
+        let (gate, started, release, finished) = open_worker::prepare_gate();
+        h.state_mut().open_prepare_gate = Some(gate);
+        h.state_mut().run_command("export.text");
+        h.step();
+        started.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(h.state().pending_opens.len(), 1);
+        assert_eq!(h.state().pending_opens[0].then, Some("export.text"), "{case}: command belongs to the pending request");
+
+        // A different document becoming active must neither run nor inherit the tool.
+        h.state_mut().open_bytes("unrelated.pdf", None, fixture(1)).unwrap();
+        let unrelated = h.state().views[0].id;
+        h.step();
+        assert!(h.state().dialog.is_none());
+        release.send(()).unwrap();
+        finished.recv_timeout(Duration::from_secs(5)).unwrap();
+        h.step();
+
+        if encrypted {
+            assert_eq!(h.state().password_prompt.as_ref().unwrap().then, Some("export.text"));
+            assert!(h.state().dialog.is_none());
+            if case != "password-cancel" {
+                h.state_mut().submit_password(Some("wrong".into()));
+                started.recv_timeout(Duration::from_secs(5)).unwrap();
+                release.send(()).unwrap();
+                finished.recv_timeout(Duration::from_secs(5)).unwrap();
+                h.step();
+                let prompt = h.state().password_prompt.as_ref().unwrap();
+                assert!(prompt.error.is_some());
+                assert_eq!(prompt.then, Some("export.text"));
+                assert!(h.state().dialog.is_none());
+            }
+            if case == "password" {
+                h.state_mut().submit_password(Some("reader".into()));
+                started.recv_timeout(Duration::from_secs(5)).unwrap();
+                release.send(()).unwrap();
+                finished.recv_timeout(Duration::from_secs(5)).unwrap();
+                h.step();
+            } else {
+                h.state_mut().submit_password(None);
+            }
+        }
+        if matches!(case, "plain" | "converted" | "password") {
+            assert_eq!(h.state().views.len(), 2);
+            let app = h.state();
+            let opened = &app.views[app.active.unwrap()];
+            assert_ne!(opened.id, unrelated);
+            assert_eq!(app.session.get(opened.id).unwrap().path.as_deref(), if case == "converted" { None } else { path.to_str() });
+            assert!(matches!(app.dialog, Some(crate::Dialog::Export(_))));
+            // Closing the dialog and processing more frames must not execute it again.
+            h.state_mut().dialog = None;
+        } else {
+            assert_eq!(h.state().views.len(), 1);
+            assert!(h.state().dialog.is_none());
+        }
+        assert!(h.state().pending_opens.is_empty());
+        assert!(h.state().password_prompt.is_none());
+        h.state_mut().open_bytes("later.pdf", None, fixture(1)).unwrap();
+        h.run_steps(2);
+        assert!(h.state().dialog.is_none(), "{case}: continuation cannot run on another open");
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+#[test]
 fn launch_layout_waits_for_cli_opens_and_preserves_restored_tabs() {
     use crate::canvas::PageLayout;
     // Controlled worker replies exercise both completion orders without scheduling races.

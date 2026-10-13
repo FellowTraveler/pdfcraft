@@ -1193,11 +1193,15 @@ impl PdfCraftApp {
             open_worker::ResultKind::Failed(reason) => {
                 self.notify_fmt("Couldn't open {name}: {reason}", &[("name", &pending.name), ("reason", &reason)]);
             }
-            open_worker::ResultKind::Conversion(bytes) => {
-                if let Some(Err(error)) = self.open_converted(&pending.name, &bytes) {
-                    self.notify_fmt("Couldn't open {name}: {e}", &[("name", &pending.name), ("e", &error)]);
+            open_worker::ResultKind::Conversion(bytes) => match self.open_converted(&pending.name, &bytes) {
+                Some(Ok(())) => {
+                    if let Some(command) = pending.then {
+                        self.execute(command);
+                    }
                 }
-            }
+                Some(Err(error)) => self.notify_fmt("Couldn't open {name}: {e}", &[("name", &pending.name), ("e", &error)]),
+                None => {}
+            },
             open_worker::ResultKind::Prepared { bytes, result } => match *result {
                 Ok(prepared) => match self.finish_open(&pending.name, pending.path.clone(), bytes.len(), prepared, pending.activate) {
                     Ok(id) => {
@@ -1727,6 +1731,13 @@ impl PdfCraftApp {
 
     #[cfg(not(target_arch = "wasm32"))]
     pub fn open_path(&mut self, path: &str) {
+        self.open_path_attempt(path);
+    }
+
+    /// Whether this attempt opened a document, created a password prompt, or queued an open.
+    /// Failure can leave an older password prompt intact; it does not belong to this attempt.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn open_path_attempt(&mut self, path: &str) -> bool {
         let name = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.to_string());
         // Taken before reading: a build that rewrites the file meanwhile still counts as a change.
         let stamp = file_watch::Stamp::at(path);
@@ -1734,20 +1745,26 @@ impl PdfCraftApp {
         // deterministic inline startup and test flows. Once live, reading and preparation use
         // the bounded worker and commit on the UI thread.
         if self.ctx.is_none() || self.run_inline {
-            match std::fs::read(path) {
+            return match std::fs::read(path) {
                 Ok(bytes) => {
                     let before = self.views.len();
                     if let Err(error) = self.open_bytes(&name, Some(path.to_string()), bytes) {
                         self.notify_fmt("Couldn't open {name}: {e}", &[("name", &name), ("e", &error)]);
-                    } else if self.views.len() > before
-                        && let Some(doc) = self.views.last().map(|view| view.id)
-                    {
-                        self.watch.known_as(doc, stamp);
+                        false
+                    } else {
+                        if self.views.len() > before
+                            && let Some(doc) = self.views.last().map(|view| view.id)
+                        {
+                            self.watch.known_as(doc, stamp);
+                        }
+                        true
                     }
                 }
-                Err(error) => self.notify_fmt("Couldn't read {name}: {e}", &[("name", &name), ("e", &error.to_string())]),
-            }
-            return;
+                Err(error) => {
+                    self.notify_fmt("Couldn't read {name}: {e}", &[("name", &name), ("e", &error.to_string())]);
+                    false
+                }
+            };
         }
         self.startup_superseded = true;
         if let Err(error) = self.schedule_open(OpenRequest {
@@ -1762,6 +1779,9 @@ impl PdfCraftApp {
             then: None,
         }) {
             self.notify_fmt("Couldn't open {name}: {e}", &[("name", &name), ("e", &error)]);
+            false
+        } else {
+            true
         }
     }
 
@@ -2064,12 +2084,21 @@ impl PdfCraftApp {
         self.ask_one(pickers::Ask::File(dialog), None, move |app, path| {
             let path = path.to_string_lossy().into_owned();
             let before = app.views.len();
-            app.open_path(&path);
-            if let Some(prompt) = app.password_prompt.as_mut().filter(|p| p.path.as_deref() == Some(path.as_str())) {
-                // Encrypted: the tool runs once the password is in.
-                prompt.then = Some(command);
+            let pending_before = app.pending_opens.len();
+            if !app.open_path_attempt(&path) {
+                return;
+            }
+            if app.ctx.is_some() && !app.run_inline {
+                // UI-thread completion cannot run inside open_path: only its newly queued
+                // request owns this continuation, including through password retries.
+                if let Some(pending) = app.pending_opens.get_mut(pending_before) {
+                    pending.then = Some(command);
+                }
             } else if app.views.len() > before && app.active.is_some() {
                 app.execute(command);
+            } else if let Some(prompt) = app.password_prompt.as_mut().filter(|p| p.path.as_deref() == Some(path.as_str())) {
+                // Encrypted: the tool runs once the password is in.
+                prompt.then = Some(command);
             }
         });
     }
