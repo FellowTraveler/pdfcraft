@@ -2097,7 +2097,7 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
     let unobstructed = !app.modal_open() && !app.palette_open;
     let view = &mut app.views[index];
     if view.organize {
-        organize_grid(view, info, doc.allows_assembly(), doc.dirty, unobstructed, ui, &t);
+        organize_grid(view, doc, unobstructed, app.show_page_edge_shadows, ui, &t);
         return;
     }
 
@@ -2382,6 +2382,12 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
             scroll = scroll.vertical_scroll_offset((r.top() - y_shift + fy * r.height() - rel.y).clamp(0.0, max_y));
         }
     }
+    // egui paints viewport-edge gradients over the PDF after the scroll contents.
+    // Scope their suppression to this scroll area; other panels keep their fades.
+    let fade_strength = ui.spacing().scroll.fade.strength;
+    if !app.show_page_edge_shadows {
+        ui.spacing_mut().scroll.fade.strength = 0.0;
+    }
     let out = scroll.show_viewport(ui, |ui, viewport| {
         // egui's drag responses accept every pointer button. Keep a wheel gesture from also
         // selecting text, drawing a mark, or panning with the Hand tool.
@@ -2454,7 +2460,9 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
             }
             let xf = PageXform { rect: r, rot: view.rotation, pw: info.pages[i].width.max(1.0), ph: info.pages[i].height.max(1.0) };
             // Soft shadow + paper.
-            painter.add(egui::epaint::Shadow { offset: [0, 3], blur: 14, spread: 0, color: t.page_shadow }.as_shape(r, CornerRadius::ZERO));
+            if app.show_page_edge_shadows {
+                painter.add(egui::epaint::Shadow { offset: [0, 3], blur: 14, spread: 0, color: t.page_shadow }.as_shape(r, CornerRadius::ZERO));
+            }
             painter.rect_filled(r, CornerRadius::ZERO, Color32::WHITE);
             if let Some(err) = view.errors.get(&i) {
                 painter.rect_filled(r, CornerRadius::ZERO, Color32::from_rgb(0xFB, 0xF4, 0xF4));
@@ -3142,6 +3150,7 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
         });
         (wanted, visible_now)
     });
+    ui.spacing_mut().scroll.fade.strength = fade_strength;
     view.single_edges = visible_pages.first().copied().filter(|_| !view.continuous).map(|page| {
         // At the top once the page's top edge shows where going to a page puts it (a gap
         // below the window's top). Within a point, as for wheel paging, so layout rounding
@@ -4240,7 +4249,17 @@ fn gap_button(ui: &mut egui::Ui, gap: usize, at: Pos2, height: f32, label: Strin
     resp.on_hover_text(label).clicked()
 }
 
-fn organize_grid(view: &mut DocView, info: &DocInfo, editable: bool, dirty: bool, unobstructed: bool, ui: &mut egui::Ui, t: &Tokens) {
+fn organize_grid(
+    view: &mut DocView,
+    doc: &pdfcraft_engine::Document,
+    unobstructed: bool,
+    show_page_edge_shadows: bool,
+    ui: &mut egui::Ui,
+    t: &Tokens,
+) {
+    let info = &doc.info;
+    let editable = doc.allows_assembly();
+    let dirty = doc.dirty;
     let ppp = ui.ctx().pixels_per_point();
     // The page image scales with the zoom; the padding and the page number don't.
     let cell = vec2(146.0 * view.grid_zoom + 44.0, 194.0 * view.grid_zoom + 88.0);
@@ -4262,6 +4281,11 @@ fn organize_grid(view: &mut DocView, info: &DocInfo, editable: bool, dirty: bool
     let (mut in_view, mut sharper): (Vec<(usize, f32)>, Vec<RenderRequest>) = (Vec::new(), Vec::new());
     // The source cell can scroll out of the virtualized rows during a drag.
     let mut drop = view.org_drag.is_some() && ui.input(|i| i.pointer.primary_released());
+    // As in the document viewer, hide only this area's decorative edge fades.
+    let fade_strength = ui.spacing().scroll.fade.strength;
+    if !show_page_edge_shadows {
+        ui.spacing_mut().scroll.fade.strength = 0.0;
+    }
     egui::ScrollArea::vertical().auto_shrink([false, false]).show_viewport(ui, |ui, clip| {
         if middle_gesture {
             let opacity = ui.opacity();
@@ -4313,7 +4337,9 @@ fn organize_grid(view: &mut DocView, info: &DocInfo, editable: bool, dirty: bool
                 if view.selected.contains(&i) {
                     ui.painter().rect_stroke(c.shrink(6.0), CornerRadius::same(8), Stroke::new(1.5, t.accent), egui::StrokeKind::Inside);
                 }
-                ui.painter().rect_filled(pr.translate(vec2(0.0, 1.5)), CornerRadius::same(1), t.page_shadow);
+                if show_page_edge_shadows {
+                    ui.painter().rect_filled(pr.translate(vec2(0.0, 1.5)), CornerRadius::same(1), t.page_shadow);
+                }
                 ui.painter().rect_filled(pr, CornerRadius::ZERO, Color32::WHITE);
                 // A page drawn larger than its thumbnail gets a render at the size drawn, while
                 // it is in view; until that arrives the thumbnail stands in.
@@ -4478,6 +4504,7 @@ fn organize_grid(view: &mut DocView, info: &DocInfo, editable: bool, dirty: bool
             view.org_drag = None;
         }
     });
+    ui.spacing_mut().scroll.fade.strength = fade_strength;
     // Files dragged in from outside go to the gap under the pointer. Some platforms don't say
     // where the pointer is until the files are dropped; then the whole grid is the target.
     let pointer = ui.input(|i| i.pointer.hover_pos()).filter(|p| viewport.contains(*p));

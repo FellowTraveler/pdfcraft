@@ -28,6 +28,8 @@
 //!   comments, selecting text, moving comments). `ui.state` reports `pages_on_screen` to aim at.
 //! - `ui.type {text}`, `ui.key {key, modifiers?}`: keyboard input to the focused widget / app.
 //! - `ui.command {id}`: run a registry command (as the menu would). `ui.commands` lists them.
+//! - `ui.set {key: "show_page_edge_shadows", value: "true"|"false"}` controls page
+//!   decoration app-wide; `ui.state.show_page_edge_shadows` reports the saved preference.
 //! - `ui.set {key, value}`: view options (`--page`, `--zoom`, …), plus persistent preferences.
 //!   `select` accepts physical page numbers and ranges such as `1,12,16-18`; blank clears the
 //!   explicit selection. This is the same bounded parser as the Organize Pages field; invalid
@@ -722,6 +724,7 @@ impl Host for crate::PdfCraftApp {
             "palette_open": self.palette_open,
             "theme": format!("{:?}", self.theme),
             "theme_preference": self.theme_preference,
+            "show_page_edge_shadows": self.show_page_edge_shadows,
             "language": self.language,
             "notice": self.toast.as_ref().map(|t| t.0.clone()),
             "progress": self.progress_notice.as_ref().map(|p| json!({ "label": p.label, "fraction": p.fraction })),
