@@ -58,6 +58,17 @@ fn plural_none(_: u64) -> usize {
     0
 }
 
+/// Lithuanian: one (ending in 1 except 11), few (ending in 2–9 except 12–19), other otherwise.
+fn plural_lithuanian(n: u64) -> usize {
+    match (n % 10, n % 100) {
+        (1, 11) => 2,
+        (1, _) => 0,
+        (2..=9, 12..=19) => 2,
+        (2..=9, _) => 1,
+        _ => 2,
+    }
+}
+
 /// Czech: 1 → one, 2–4 → few, everything else (0, 5+) → other.
 fn plural_cs(n: u64) -> usize {
     match n {
@@ -136,7 +147,7 @@ fn plural_sl(n: u64) -> usize {
 }
 
 /// The registry. English first: it is the fallback and the source language.
-pub static LANGUAGES: [LangInfo; 21] = [
+pub static LANGUAGES: [LangInfo; 22] = [
     LangInfo { code: "en", name: "English", source: "", plural: plural_one_other, rtl: false, catalog: OnceLock::new() },
     LangInfo { code: "ja", name: "日本語", source: include_str!("ja.tsv"), plural: plural_none, rtl: false, catalog: OnceLock::new() },
     // Simplified Chinese; `zh`, `zh-CN`, `zh-SG` and `zh-Hans-*` locales resolve here (see `candidates`).
@@ -194,6 +205,8 @@ pub static LANGUAGES: [LangInfo; 21] = [
     LangInfo { code: "el", name: "Ελληνικά", source: include_str!("el.tsv"), plural: plural_one_other, rtl: false, catalog: OnceLock::new() },
     // Turkish; every `tr-*` locale (`tr-TR`, `tr_TR.UTF-8`) resolves here.
     LangInfo { code: "tr", name: "Türkçe", source: include_str!("tr.tsv"), plural: plural_none, rtl: false, catalog: OnceLock::new() },
+    // Lithuanian; every `lt-*` locale (`lt-LT`, `lt_LT.UTF-8`) resolves here. Three plural forms (one, few, other).
+    LangInfo { code: "lt", name: "Lietuvių", source: include_str!("lt.tsv"), plural: plural_lithuanian, rtl: false, catalog: OnceLock::new() },
 ];
 
 impl LangInfo {
@@ -851,6 +864,11 @@ mod tests {
     }
 
     fn ui_literals() -> std::collections::BTreeSet<String> {
+        scan_ui_literals(false)
+    }
+
+    // Lithuanian also checks direct lookup calls and multiline literal arguments.
+    fn scan_ui_literals(expanded: bool) -> std::collections::BTreeSet<String> {
         let mut stack = vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
         let mut literals = std::collections::BTreeSet::new();
         while let Some(dir) = stack.pop() {
@@ -862,8 +880,19 @@ mod tests {
                     }
                 } else if path.extension().is_some_and(|ext| ext == "rs") {
                     let source = std::fs::read_to_string(path).expect("UI source file").replace("\r\n", "\n");
+                    let source = if expanded { source.replace("crate::i18n::t(", "tl!(") } else { source };
                     let mut rest = source.split("#[cfg(test)]\nmod ").next().unwrap_or_default();
-                    while let Some((_, after)) = rest.split_once("tl!(\"") {
+                    while let Some((_, after)) = rest.split_once(if expanded { "tl!(" } else { "tl!(\"" }) {
+                        let after = if expanded {
+                            let after = after.trim_start();
+                            let Some(after) = after.strip_prefix('"') else {
+                                rest = after;
+                                continue;
+                            };
+                            after
+                        } else {
+                            after
+                        };
                         let mut escaped = false;
                         let end = after
                             .char_indices()
@@ -876,7 +905,10 @@ mod tests {
                             })
                             .expect("closed tl! literal");
                         let (raw, tail) = after.split_at(end);
-                        if tail.starts_with("\")") {
+                        let argument_end = tail.strip_prefix('"').expect("closing quote").trim_start();
+                        let literal_call =
+                            argument_end.starts_with(')') || argument_end.strip_prefix(',').is_some_and(|rest| rest.trim_start().starts_with(')'));
+                        if tail.starts_with("\")") || (expanded && literal_call) {
                             let label: String = serde_json::from_str(&format!("\"{raw}\"")).expect("UI literal escapes");
                             literals.insert(label);
                         }
@@ -886,6 +918,24 @@ mod tests {
             }
         }
         literals
+    }
+
+    /// Partial catalogs also translate every label of the absolute local GoToR consent prompt.
+    #[test]
+    fn local_gotor_confirmation_is_translated_in_all_supported_languages() {
+        for language in LANGUAGES.iter().filter(|language| !language.source.is_empty()) {
+            let lang = Lang::from_code(language.code).expect("registered language");
+            for label in [
+                "Open this local PDF?",
+                "This document is trying to open a local file:",
+                "Only allow this if you trust the source document.",
+                "Allow",
+                "Cancel",
+            ] {
+                assert!(has(lang, label), "{} lacks GoToR confirmation label: {label}", language.code);
+                assert_ne!(tr(lang, label), label, "{} falls back to English for {label}", language.code);
+            }
+        }
     }
 
     /// Japanese translates every `tl!("…")` literal in the UI source, so a new string can't ship in
@@ -2003,6 +2053,210 @@ mod tests {
         assert_eq!(fmt(t("{n} pages selected"), &[("n", "3")]), "Выбрано 3 страницы");
         assert_eq!(tr(ru, "CheckBox"), "Флажок");
         set_current(Lang::EN);
+    }
+
+    #[test]
+    fn lithuanian_is_registered_and_persists() {
+        let lt = Lang::from_code("lt").expect("lt registered");
+        assert_eq!(lt.name(), "Lietuvių");
+        assert_eq!(normalize_pref("LT"), Some("lt"));
+        for tag in ["lt", "lt-LT", "lt_LT.UTF-8", "LT-lt"] {
+            assert_eq!(lang_from_tag(tag), Some(lt), "{tag}");
+        }
+        assert_eq!(tr(lt, "File"), "Failas");
+        assert_eq!(tr(lt, "Edit"), "Redaguoti");
+        assert_eq!(tr(lt, "Save"), "Įrašyti");
+        assert_eq!(tr(lt, "Interface language"), "Sąsajos kalba");
+        assert_eq!(trn(lt, 1, "{n} page", "{n} pages"), "1 puslapis");
+        assert_eq!(trn(lt, 2, "{n} page", "{n} pages"), "2 puslapiai");
+        assert_eq!(trn(lt, 10, "{n} page", "{n} pages"), "10 puslapių");
+        assert_eq!(trn(lt, 11, "{n} page", "{n} pages"), "11 puslapių");
+        assert_eq!(trn(lt, 21, "{n} page", "{n} pages"), "21 puslapis");
+        assert_eq!(trn(lt, 22, "{n} page", "{n} pages"), "22 puslapiai");
+        assert_eq!(trn(lt, 12, "{n} object selected", "{n} objects selected"), "Pažymėta 12 objektų");
+        assert_eq!(trn(lt, 22, "{n} object selected", "{n} objects selected"), "Pažymėti 22 objektai");
+        let mut app = crate::PdfCraftApp::default();
+        app.set_option("language", "LT").unwrap();
+        assert_eq!(app.language, "lt");
+        let mut restored = crate::PdfCraftApp::default();
+        restored.restore(&app.persist());
+        assert_eq!(restored.language, "lt");
+        assert!(restored.set_option("language", "xx").is_err());
+    }
+
+    #[test]
+    fn lithuanian_covers_commands_and_catalogue() {
+        let lt = Lang::from_code("lt").expect("lt registered");
+        let mut missing = std::collections::BTreeSet::new();
+        for command in pdfcraft_engine::commands::COMMANDS {
+            if !has(lt, command.label) {
+                missing.insert(command.label);
+            }
+            if let Some(menu) = command.menu
+                && !has(lt, menu)
+            {
+                missing.insert(menu);
+            }
+        }
+        for group in pdfcraft_engine::catalog::TOOL_GROUPS {
+            if !has(lt, group.label) {
+                missing.insert(group.label);
+            }
+            for section in group.sections {
+                if !has(lt, section.title) {
+                    missing.insert(section.title);
+                }
+                for item in section.items {
+                    if !has(lt, item.label) {
+                        missing.insert(item.label);
+                    }
+                }
+            }
+        }
+        assert!(missing.is_empty(), "Lithuanian misses commands/tools: {missing:#?}");
+    }
+
+    #[test]
+    fn lithuanian_covers_ui_literals() {
+        let lt = Lang::from_code("lt").expect("lt registered");
+        let literals = scan_ui_literals(true);
+        assert!(literals.contains("Float panel"), "direct lookup literals are included");
+        assert!(literals.contains("@{login}: {prs} PRs, {commits} commits, +{added} / −{deleted} lines (Δ {delta}), +{bin_added} / −{bin_deleted} binary assets, {first} – {last}"), "multiline literal arguments are included");
+        let missing: Vec<_> = literals.iter().filter(|label| !has(lt, label)).collect();
+        assert!(missing.is_empty(), "Untranslated Lithuanian UI labels: {missing:#?}");
+    }
+
+    #[test]
+    fn lithuanian_covers_contextual_calendar_certificate_and_preference_labels() {
+        let lt = Lang::from_code("lt").expect("lt registered");
+        assert_eq!(tr_ctx(lt, "signature pad", "Type"), "Tekstu");
+        for label in ["All tools", "Read", "E-Sign", "Tools", "View more", "View less"] {
+            assert!(has(lt, label), "shell label remains untranslated: {label}");
+        }
+        assert_eq!(["Slow", "Normal", "Fast"].map(|label| tr_ctx(lt, "scroll speed", label)), ["Lėtas", "Įprastas", "Greitas"]);
+        let months = [
+            ("January", "sausis", "sausio"),
+            ("February", "vasaris", "vasario"),
+            ("March", "kovas", "kovo"),
+            ("April", "balandis", "balandžio"),
+            ("May", "gegužė", "gegužės"),
+            ("June", "birželis", "birželio"),
+            ("July", "liepa", "liepos"),
+            ("August", "rugpjūtis", "rugpjūčio"),
+            ("September", "rugsėjis", "rugsėjo"),
+            ("October", "spalis", "spalio"),
+            ("November", "lapkritis", "lapkričio"),
+            ("December", "gruodis", "gruodžio"),
+        ];
+        for (source, standalone, in_date) in months {
+            assert_eq!(tr(lt, source), standalone);
+            assert_eq!(tr_ctx(lt, "calendar date", source), in_date);
+        }
+        assert_eq!(
+            ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"].map(|day| tr_ctx(lt, "calendar weekday", day)),
+            ["Sk", "Pr", "An", "Tr", "Kt", "Pn", "Št"]
+        );
+        assert_eq!(
+            fmt(tr(lt, "{month} {day}, {y}"), &[("month", tr_ctx(lt, "calendar date", "March")), ("day", "9"), ("y", "2026")]),
+            "2026 m. kovo 9 d."
+        );
+        assert_eq!(tr_ctx(lt, "certificate", "Subject"), "Sertifikato subjektas");
+        for field in [
+            "Issued to",
+            "Issued by",
+            "Valid from",
+            "Valid to",
+            "Intended usage",
+            "Serial number",
+            "Issuer",
+            "Validity starts",
+            "Validity ends",
+            "Public key",
+            "Basic constraints",
+            "Key usage",
+            "Self-signed",
+            "SHA-1 digest",
+            "SHA-256 digest",
+        ] {
+            assert_ne!(tr_ctx(lt, "certificate", field), field, "certificate field remains untranslated: {field}");
+        }
+    }
+
+    #[test]
+    fn lithuanian_dialog_wording_preserves_resolution_and_selection_counts() {
+        let lt = Lang::from_code("lt").expect("lt registered");
+        assert_eq!(tr(lt, "for images above"), "kai raiška viršija");
+        assert_eq!(
+            fmt(tr(lt, "Checking Options ({on} of 32 in all categories)"), &[("on", "31")]),
+            "Tikrinimo parinktys (visose kategorijose: 31 iš 32)"
+        );
+    }
+
+    #[test]
+    fn lithuanian_covers_bundled_catalog_keys_including_dynamic_dialog_labels() {
+        // Compare English keys, not other languages' translations. Literal scans alone
+        // miss labels passed through helpers, enum methods and conditional expressions.
+        let lt = Lang::from_code("lt").expect("lt registered");
+        let mut missing = std::collections::BTreeSet::new();
+        for reference in LANGUAGES.iter().filter(|language| language.code != "lt") {
+            let (entries, errors) = catalog::parse_entries(reference.source, reference.plural_forms());
+            assert!(errors.is_empty(), "{}: invalid reference catalog: {errors:?}", reference.code);
+            for entry in entries {
+                let translated = match entry.context.as_str() {
+                    "" => lt.catalog().plain(&entry.source),
+                    "@id" => lt.catalog().id(&entry.source),
+                    "@plural" => entry.source.split_once('|').and_then(|(one, other)| lt.catalog().plural(one, other, 0)),
+                    context => lt.catalog().contextual(context, &entry.source),
+                };
+                if translated.is_none() {
+                    missing.insert((entry.context, entry.source));
+                }
+            }
+        }
+        assert!(missing.is_empty(), "Lithuanian misses bundled catalog keys: {missing:#?}");
+    }
+
+    #[test]
+    fn lithuanian_covers_credits_labels() {
+        let lt = Lang::from_code("lt").expect("lt registered");
+        let labels = crate::credits::NameMode::ALL
+            .iter()
+            .map(|mode| mode.label())
+            .chain(crate::credits::SortKey::ALL.iter().flat_map(|key| {
+                let (menu, heading) = key.label();
+                [menu, heading]
+            }))
+            .chain(crate::credits::MODEL_COLUMNS.iter().copied());
+        let missing: Vec<_> = labels.filter(|label| !has(lt, label)).collect();
+        assert!(missing.is_empty(), "Lithuanian misses credits labels: {missing:#?}");
+    }
+
+    #[test]
+    fn lithuanian_wording_fixes_keep_context_and_meaning() {
+        let lt = Lang::from_code("lt").expect("lt registered");
+        assert_eq!(tr(lt, "of {name}"), "iš {name}");
+        assert_eq!(tr(lt, "Active"), "Aktyvi", "the adjective describes a theme (tema)");
+        for n in [1, 2, 12] {
+            let renamed = trn(
+                lt,
+                n,
+                "{n} field name collides with earlier files and will be renamed: {list}",
+                "{n} field names collide with earlier files and will be renamed: {list}",
+            );
+            assert!(renamed.contains("ankstesniuose failuose esančių laukų pavadinimais"));
+            assert!(renamed.contains("bus pervadint"));
+            assert!(renamed.contains("{list}"));
+        }
+        assert_eq!(tr(lt, "Two-Up (Facing)"), "Du atgręžti puslapiai");
+        assert_eq!(tr(lt, "Windows store  ·  "), "„Windows“ sertifikatų saugykla  ·  ");
+        assert_eq!(
+            tr(lt, "Adds invisible text over each word; the page image is not changed"),
+            "Virš kiekvieno žodžio prideda nematomą tekstą; puslapio vaizdas nesikeičia"
+        );
+        assert!(
+            tr(lt, "The fonts PdfCraft writes with can't draw “{c}” ({code}), so it shows as ? in every PDF viewer. The text is saved.")
+                .contains("visose PDF žiūryklėse")
+        );
     }
 
     #[test]

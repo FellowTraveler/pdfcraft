@@ -146,6 +146,34 @@ fn date_fields_offer_a_calendar() {
     assert_eq!(value(&h, "due"), vec![format!("{nm:02}/15/{ny}")], "picked in the field's format");
 }
 
+#[test]
+fn lithuanian_calendar_localizes_months_and_weekdays_without_changing_field_values() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = harness();
+    h.state_mut().set_option("language", "lt").unwrap();
+    h.state_mut().apply_edit(pdfcraft_engine::Edit::AddField {
+        page: 0,
+        rect: [50.0, 40.0, 200.0, 60.0],
+        kind: pdfcraft_engine::NewField::Date,
+        name: Some("due".into()),
+    });
+    h.run_steps(4);
+    click_field(&mut h, "due", 0);
+    let (y, m, _) = h.state().session.today();
+    let months = ["sausis", "vasaris", "kovas", "balandis", "gegužė", "birželis", "liepa", "rugpjūtis", "rugsėjis", "spalis", "lapkritis", "gruodis"];
+    h.get_by_label(&format!("{y} m. {}", months[(m - 1) as usize]));
+    for day in ["Sk", "Pr", "An", "Tr", "Kt", "Pn", "Št"] {
+        h.get_by_label(day);
+    }
+    h.get_by_label("›").click();
+    h.run_steps(2);
+    let (ny, nm) = if m == 12 { (y + 1, 1) } else { (y, m + 1) };
+    h.get_by_label(&format!("{ny} m. {}", months[(nm - 1) as usize]));
+    h.get_by_label("15").click();
+    h.run_steps(4);
+    assert_eq!(value(&h, "due"), vec![format!("{nm:02}/15/{ny}")], "the PDF field keeps its own date format");
+}
+
 /// The value of `name` in a saved PDF, read back by opening it in a fresh app.
 fn saved_value(path: &std::path::Path, name: &str) -> Vec<String> {
     let mut app = PdfCraftApp::new();

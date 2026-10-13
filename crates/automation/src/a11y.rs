@@ -203,6 +203,16 @@ fn review_html(record: &Value) -> Result<String> {
 }
 
 impl Automation {
+    pub(crate) fn accessibility_autotag_apply(&mut self, a: &Args) -> Result<Value> {
+        let id = self.doc(a)?.id;
+        self.session.apply(id, pdfcraft_engine::Edit::AutoTagText).map_err(failed)?;
+        let tags = self.accessibility_tags(a)?;
+        Ok(json!({
+            "tags": tags["tags"], "count": tags["count"],
+            "note": "Text objects were tagged as paragraphs. Review heading roles, reading order and remaining accessibility findings manually.",
+        }))
+    }
+
     pub(crate) fn accessibility_autotag_preview(&self, a: &Args) -> Result<Value> {
         let page = self.page(a)?;
         let preview = self.doc(a)?.autotag_preview(page).map_err(failed)?;
@@ -490,7 +500,7 @@ impl Automation {
 }
 
 impl Automation {
-    fn ocr_settings(&self, a: &Args) -> Result<pdfcraft_engine::ocr::OcrSettings> {
+    pub(crate) fn ocr_settings(&self, a: &Args) -> Result<pdfcraft_engine::ocr::OcrSettings> {
         let mut settings = pdfcraft_engine::ocr::OcrSettings::default();
         if let Some(d) = a.opt_num("dpi")? {
             settings.dpi = d.clamp(72.0, 600.0) as f32;
@@ -649,6 +659,56 @@ impl Automation {
             "compliant": issues.is_empty(),
             "issues": issues,
             "declared": { "pdfa": d.pdfa.map(|(p, c)| format!("PDF/A-{p}{}", c.to_lowercase())), "pdfua": d.pdfua, "output_intents": d.output_intents },
+        }))
+    }
+
+    pub(crate) fn print_readiness(&self, a: &Args) -> Result<Value> {
+        let report = self.doc(a)?.print_readiness();
+        let findings: Vec<Value> =
+            report.findings.iter().map(|f| json!({ "id": f.id, "severity": f.severity, "message": f.message, "page": f.page })).collect();
+        let pages: Vec<Value> = report
+            .pages
+            .iter()
+            .map(|p| {
+                json!({
+                    "page": p.page,
+                    "media_mm": p.media_mm,
+                    "crop_mm": p.crop_mm,
+                    "trim_mm": p.trim_mm,
+                    "bleed_mm": p.bleed_mm,
+                    "trim_set": p.trim_set,
+                    "bleed_set": p.bleed_set,
+                    "bleed_margin_mm": p.bleed_margin_mm,
+                })
+            })
+            .collect();
+        let images: Vec<Value> = report
+            .images
+            .iter()
+            .map(|image| {
+                json!({
+                    "page": image.page,
+                    "name": image.name,
+                    "ppi": image.ppi,
+                    "pixels": image.pixels,
+                    "size_mm": image.size_mm,
+                })
+            })
+            .collect();
+        let pdfa: Vec<Value> = report
+            .pdfa_issues
+            .iter()
+            .map(|issue| json!({ "clause": issue.clause, "message": issue.message, "page": issue.page.map(|p| p + 1) }))
+            .collect();
+        Ok(json!({
+            "text": report.text(),
+            "findings": findings,
+            "pages": pages,
+            "images": images,
+            "output_intents": report.output_intents,
+            "fonts_not_embedded": report.fonts_not_embedded,
+            "pdfa_issues": pdfa,
+            "resolution_unknown": report.resolution_unknown,
         }))
     }
 

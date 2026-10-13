@@ -103,6 +103,17 @@ mod tests {
     }
 
     #[test]
+    fn newer_options_and_version_are_preserved() {
+        let parsed = parse(&["--two-paged", "--new-window", "--grid-zoom", "150", "--default-mode", "read", "file:///tmp/a%20b.pdf"]);
+        assert!(parsed.two_paged && parsed.new_window);
+        assert_eq!(parsed.files, ["/tmp/a b.pdf"]);
+        assert_eq!(parsed.options, [("grid-zoom".into(), "150".into()), ("default-mode".into(), "read".into())]);
+        assert!(!parsed.may_hand_off());
+        let version = parse(&["--two-paged", "--version", "ignored.pdf"]);
+        assert!(version.version && version.files.is_empty());
+    }
+
+    #[test]
     fn malformed_boolean_does_not_eat_a_file_or_option() {
         let args = parse(&["--two-paged=false", "first.pdf", "--layout", "single", "second.pdf"]);
         assert!(!args.two_paged);
@@ -139,7 +150,11 @@ mod tests {
             assert_eq!(persisted["default_layout"], "single");
             assert!(persisted.get("two_paged").is_none());
             // Existing --layout applies after the flag to the active document only.
-            app.set_option("layout", "continuous").unwrap();
+            if enabled {
+                app.set_launch_layout("continuous").unwrap();
+            } else {
+                app.set_option("layout", "continuous").unwrap();
+            }
             assert_eq!(app.views[2].layout, pdfcraft_ui_egui::canvas::PageLayout::Single);
             assert!(app.views[2].continuous());
             app.set_option("default-layout", "two-up").unwrap();
@@ -147,6 +162,36 @@ mod tests {
             assert!(app.view_defaults.continuous);
             open_files(&mut app, &[], enabled);
             assert_eq!(app.views.len(), 3);
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn explicit_launch_layout_preserves_argument_order_and_active_file() {
+        use pdfcraft_ui_egui::canvas::PageLayout;
+        let path = std::env::temp_dir().join(format!("pdfcraft-explicit-layout-{}.pdf", std::process::id()));
+        std::fs::write(&path, include_bytes!("../../../crates/ui-egui/tests/data/form.pdf")).unwrap();
+        let name = path.to_str().unwrap();
+        for prefix in [["--two-paged", "--layout", "single"], ["--layout", "single", "--two-paged"]] {
+            for count in [1, 2] {
+                let args = Arguments::parse(prefix.into_iter().chain(std::iter::repeat_n(name, count)).map(str::to_owned));
+                let mut app = PdfCraftApp::new();
+                app.set_option("default-layout", "continuous").unwrap();
+                app.open_bytes("restored.pdf", None, include_bytes!("../../../crates/ui-egui/tests/data/form.pdf").to_vec()).unwrap();
+                open_files(&mut app, &args.files, args.two_paged);
+                for (key, value) in args.options {
+                    assert_eq!(key, "layout");
+                    app.set_launch_layout(&value).unwrap();
+                }
+                assert_eq!(app.active, Some(count));
+                assert!(app.views[0].continuous());
+                for view in app.views.iter().skip(1).take(count - 1) {
+                    assert_eq!(view.layout, PageLayout::TwoUp);
+                }
+                assert_eq!(app.views[count].layout, PageLayout::Single);
+                assert!(!app.views[count].continuous());
+                assert!(app.view_defaults.continuous);
+            }
         }
         std::fs::remove_file(path).unwrap();
     }

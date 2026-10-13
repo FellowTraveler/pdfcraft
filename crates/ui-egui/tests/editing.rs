@@ -1917,6 +1917,75 @@ fn launch_display_override_survives_password_retry_without_changing_defaults() {
 }
 
 #[test]
+fn asynchronous_launch_display_override_survives_retries_and_cancel() {
+    asynchronous_launch_display(false);
+}
+
+#[test]
+fn asynchronous_launch_display_explicit_layout_survives_retries_and_cancel() {
+    asynchronous_launch_display(true);
+}
+
+fn asynchronous_launch_display(explicit: bool) {
+    use pdfcraft_ui_egui::canvas::PageLayout;
+    fn wait(h: &mut Harness<'static, PdfCraftApp>, stage: &str, ready: impl Fn(&PdfCraftApp) -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !ready(h.state()) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{stage}: views={}, prompt={}, error={}, notice={}",
+                h.state().views.len(),
+                h.state().password_prompt.is_some(),
+                h.state().password_prompt.as_ref().is_some_and(|p| p.error.is_some()),
+                h.state().toast.is_some()
+            );
+            h.run_steps(2);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+    let path = temp_path(&format!("async-startup-layout-{explicit}.pdf"));
+    std::fs::write(&path, protected("reader", "owner", -4)).unwrap();
+    let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_eframe(|_| {
+        let mut app = PdfCraftApp::new();
+        app.set_option("language", "en").unwrap();
+        app.set_option("default-layout", "continuous").unwrap();
+        app.open_bytes("other.pdf", None, fixture(2)).unwrap();
+        app
+    });
+    h.run_steps(2);
+    assert!(!h.state().run_inline, "exercise upstream's actual background-opening path");
+    let other = h.state().views[0].id;
+    h.state_mut().open_path_with_display(path.to_str().unwrap(), PageLayout::TwoUp, false);
+    if explicit {
+        h.state_mut().set_launch_layout("single").unwrap();
+    }
+    wait(&mut h, "password prompt", |app| app.password_prompt.is_some());
+    // The existing document keeps its default view while this request is pending.
+    h.state_mut().submit_password(Some("wrong".into()));
+    wait(&mut h, "wrong-password result", |app| app.password_prompt.as_ref().is_some_and(|p| p.error.is_some()));
+    assert_eq!(h.state().views.len(), 1);
+    h.state_mut().submit_password(Some("reader".into()));
+    wait(&mut h, "first unlock", |app| app.views.len() == 2);
+    assert_eq!(h.state().views[0].id, other);
+    assert_eq!(h.state().views[0].layout, PageLayout::Single);
+    assert!(h.state().views[0].continuous());
+    assert_eq!(h.state().views[1].layout, if explicit { PageLayout::Single } else { PageLayout::TwoUp });
+    assert!(!h.state().views[1].continuous());
+    h.state_mut().open_path_with_display(path.to_str().unwrap(), PageLayout::TwoUp, false);
+    wait(&mut h, "password prompt", |app| app.password_prompt.is_some());
+    h.state_mut().submit_password(None);
+    h.state_mut().open_path(path.to_str().unwrap());
+    wait(&mut h, "password prompt", |app| app.password_prompt.is_some());
+    h.state_mut().submit_password(Some("reader".into()));
+    wait(&mut h, "normal unlock after cancel", |app| app.views.len() == 3);
+    assert_eq!(h.state().views[2].layout, PageLayout::Single);
+    assert!(h.state().views[2].continuous());
+    let persisted: serde_json::Value = serde_json::from_str(&h.state().persist()).unwrap();
+    assert_eq!(persisted["default_layout"], "continuous");
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn canceling_launch_display_override_does_not_affect_later_documents() {
     use pdfcraft_ui_egui::canvas::PageLayout;
     use std::io::Write as _;
@@ -2702,6 +2771,113 @@ fn dragging_a_paragraph_moves_it_and_its_edge_rewraps_it() {
     assert!(near(doc.text_lines(0)[0].rect[0], moved.rect[0]), "it keeps its place");
     assert_eq!(doc.can_undo(), Some("Edit text"), "edge drags still rewrap text");
     assert!(h.state().views[0].line_editor.is_none());
+}
+
+/// Press and release at `at` without moving.
+fn click_at(h: &mut Harness<'static, PdfCraftApp>, at: egui::Pos2) {
+    h.hover_at(at);
+    h.run_steps(1);
+    h.drag_at(at);
+    h.run_steps(1);
+    h.drop_at(at);
+    h.run_steps(4);
+}
+
+fn press(h: &mut Harness<'static, PdfCraftApp>, modifiers: Modifiers, key: Key) {
+    h.key_press_modifiers(modifiers, key);
+    h.run_steps(4);
+}
+
+#[test]
+fn arrow_keys_nudge_a_selected_image_instead_of_turning_the_page() {
+    use pdfcraft_cos::{Dict, Document, Object, SaveOptions, Stream, write_incremental};
+    let mut doc = Document::open(std::sync::Arc::new(fixture(2))).unwrap();
+    let page = pdfcraft_model::pages(&doc)[0].clone();
+    let mut form = Dict::new();
+    form.set(b"Subtype".to_vec(), Object::name("Form"));
+    form.set(b"BBox".to_vec(), Object::Array([0, 0, 200, 300].map(Object::Int).to_vec()));
+    let artwork = doc.add(Object::Stream(Stream::flate(form, b"0.2 0.5 0.9 rg 40 200 120 80 re f")));
+    let contents = doc.add(Object::Stream(Stream::flate(Dict::new(), b"/Figure Do")));
+    doc.update_dict(page.obj, |d| {
+        d.set(b"Contents".to_vec(), Object::Ref(contents));
+        let mut xo = Dict::new();
+        xo.set(b"Figure".to_vec(), Object::Ref(artwork));
+        let mut resources = Dict::new();
+        resources.set(b"XObject".to_vec(), Object::Dict(xo));
+        d.set(b"Resources".to_vec(), Object::Dict(resources));
+    })
+    .unwrap();
+    let bytes = write_incremental(&doc, &SaveOptions::default()).unwrap();
+    let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_eframe(move |_cc| {
+        let mut app = PdfCraftApp::new();
+        app.set_option("language", "en").unwrap();
+        app.open_bytes("figure.pdf", None, bytes.clone()).expect("opens");
+        app
+    });
+    h.run_steps(4);
+    assert!(h.state_mut().execute("edit.edit_text"));
+    h.run_steps(2);
+    let id = h.state().views[0].id;
+    let rect = |h: &Harness<'static, PdfCraftApp>| h.state().session.get(id).unwrap().page_images(0)[0].rect;
+    let before = rect(&h);
+    let r = h.state().views[0].page_screen_rect(0).expect("on screen");
+    click_at(&mut h, egui::pos2(r.left() + 100.0 / 200.0 * r.width(), r.top() + (300.0 - 240.0) / 300.0 * r.height()));
+    assert!(h.state().views[0].image_selection.is_some(), "selected");
+    // As in Acrobat: an arrow moves it a point, Shift and an arrow ten.
+    press(&mut h, Modifiers::NONE, Key::ArrowRight);
+    press(&mut h, Modifiers::SHIFT, Key::ArrowDown);
+    let moved = rect(&h);
+    let near = |a: f64, b: f64| (a - b).abs() < 0.01;
+    assert!(near(moved[0], before[0] + 1.0) && near(moved[1], before[1] - 10.0), "{before:?} → {moved:?}");
+    assert!(near(moved[2] - moved[0], before[2] - before[0]), "moved, not resized");
+    assert_eq!(h.state().session.get(id).unwrap().can_undo(), Some("Move image"));
+    assert_eq!(h.state().views[0].current, 0, "the arrows moved the image, not the page");
+    assert!(h.state().views[0].image_selection.is_some(), "it stays selected for the next nudge");
+}
+
+#[test]
+fn an_open_paragraph_moves_by_its_frame_and_by_the_arrow_keys() {
+    let mut h = harness(2, |_| {});
+    assert!(h.state_mut().execute("edit.edit_text"));
+    h.run_steps(2);
+    let id = h.state().views[0].id;
+    let block = |h: &Harness<'static, PdfCraftApp>| h.state().session.get(id).unwrap().text_blocks(0)[0].clone();
+    let r = h.state().views[0].page_screen_rect(0).expect("on screen");
+    let k = r.width() / 200.0;
+    let screen = |x: f64, y: f64| egui::pos2(r.left() + x as f32 * k, r.top() + (300.0 - y as f32) * k);
+    // Just above the paragraph's frame: on the frame, off its text.
+    let frame = |b: &pdfcraft_engine::TextBlock| screen((b.rect[0] + b.rect[2]) / 2.0, b.rect[3]) - egui::vec2(0.0, 4.0);
+    let near = |a: f64, b: f64| (a - b).abs() < 0.01;
+
+    let before = block(&h);
+    click_at(&mut h, screen((before.rect[0] + before.rect[2]) / 2.0, (before.rect[1] + before.rect[3]) / 2.0));
+    assert!(h.state().views[0].line_editor.is_some(), "a click on the text opens it for typing");
+    // A click on its frame selects the box instead, and the arrows move it.
+    click_at(&mut h, frame(&before));
+    assert!(h.state().views[0].line_editor.is_none(), "the frame selects the box, it doesn't type");
+    press(&mut h, Modifiers::NONE, Key::ArrowRight);
+    press(&mut h, Modifiers::SHIFT, Key::ArrowUp);
+    let nudged = block(&h);
+    assert_eq!(nudged.text, "Page 1");
+    assert!(near(nudged.rect[0], before.rect[0] + 1.0) && near(nudged.rect[1], before.rect[1] + 10.0), "{:?} → {:?}", before.rect, nudged.rect);
+    assert_eq!(h.state().session.get(id).unwrap().can_undo(), Some("Move object"));
+    assert_eq!(h.state().views[0].current, 0, "the arrows moved the paragraph, not the page");
+
+    // Open it again and drag it by its frame: it follows the pointer.
+    press(&mut h, Modifiers::NONE, Key::Escape);
+    click_at(&mut h, screen((nudged.rect[0] + nudged.rect[2]) / 2.0, (nudged.rect[1] + nudged.rect[3]) / 2.0));
+    assert!(h.state().views[0].line_editor.is_some());
+    let from = frame(&nudged);
+    drag(&mut h, from, from + egui::vec2(30.0 * k, -50.0 * k));
+    assert!(h.state().views[0].line_editor.is_none());
+    let dragged = block(&h);
+    assert!(
+        (dragged.rect[0] - nudged.rect[0] - 30.0).abs() < 1.5 && (dragged.rect[1] - nudged.rect[1] - 50.0).abs() < 1.5,
+        "{:?} → {:?}",
+        nudged.rect,
+        dragged.rect
+    );
+    assert_eq!(h.state().session.get(id).unwrap().text_lines(0).len(), 1, "moved, not retyped");
 }
 
 /// Contributor-original text, with an off-origin CropBox. Keep the moving paragraph last in
