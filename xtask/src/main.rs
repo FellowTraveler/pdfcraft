@@ -8,6 +8,7 @@ mod demo_pdf;
 mod fuzz;
 mod gates;
 mod layers;
+mod license_check;
 mod macos_integration;
 mod parity;
 mod screenshots;
@@ -21,7 +22,8 @@ const COMMANDS: &[(&str, &str, Command)] = &[
     ("layers", "Enforce the crate dependency layering (plan/architecture.md §3)", gates::layers),
     ("wasm", "cargo check --target wasm32-unknown-unknown for every crate below L8", gates::wasm),
     ("deny", "Dependency licences, bans, sources and advisories (deny.toml; needs cargo-deny)", gates::deny),
-    ("ci", "fmt --check, clippy -D warnings, test, layers, wasm, assets, deny, parity (stops at first failure)", gates::ci),
+    ("ci", "fmt --check, clippy -D warnings, test, layers, wasm, license-check, deny, parity (stops at first failure)", gates::ci),
+    ("license-check", "Offline source licence documents, attribution and metadata", license_check::run),
     ("assets", "Enforce the asset policy (AGENTS.md §1) against ATTRIBUTION.toml; --write regenerates ATTRIBUTION.md", assets::run),
     ("corpus", "Fetch the pinned pdf.js test corpus into corpus/ (git-ignored) and verify it; --update-pin re-records the pin", gates::corpus),
     ("check", "Robustness sweep over corpus/ with pdfcraft-cli; fails on crashes or regressions vs xtask/baselines", gates::check),

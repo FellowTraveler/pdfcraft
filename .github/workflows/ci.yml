@@ -87,9 +87,9 @@ jobs:
         if: runner.os == 'Linux'
         run: cargo xtask layers
 
-      - name: Assets (licences and attribution)
+      - name: Source licences and attribution
         if: runner.os == 'Linux'
-        run: cargo xtask assets
+        run: cargo xtask license-check
 
       - name: CLI without the MCP server still builds
         if: runner.os == 'Linux'

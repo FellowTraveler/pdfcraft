@@ -102,7 +102,7 @@ pub fn ci(_: &[String]) -> anyhow::Result<()> {
         ("test", Box::new(|| run_args(&["test", "--workspace"]))),
         ("layers", Box::new(|| layers(&[]))),
         ("wasm", Box::new(|| wasm(&[]))),
-        ("assets", Box::new(|| crate::assets::run(&[]))),
+        ("license-check", Box::new(|| crate::license_check::run(&[]))),
         ("deny", Box::new(|| deny(&[]))),
         ("parity", Box::new(|| crate::parity::run(&[]))),
     ];
