@@ -255,6 +255,8 @@ fn harness(theme: &str) -> Harness<'static, PdfCraftApp> {
     let theme = theme.to_string();
     let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_eframe(move |_| {
         let mut app = PdfCraftApp::new();
+        // Save comparisons must not depend on crossing a /ModDate second boundary.
+        app.session = app.session.with_clock(|| 1_700_000_000);
         app.set_option("language", "en").unwrap();
         app.set_option("theme", &theme).unwrap();
         app.open_bytes("pages.pdf", None, pdf()).unwrap();
