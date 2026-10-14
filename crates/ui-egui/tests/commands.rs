@@ -1,6 +1,8 @@
 //! The command registry drives menus, shortcuts and the palette: every registered command must
 //! be implemented, disabled commands must say why, and every surface must reach the same action.
 
+mod support;
+
 use egui::os::OperatingSystem;
 use egui::{Key, Modifiers};
 use egui_kittest::Harness;
@@ -42,15 +44,6 @@ fn harness() -> Harness<'static, PdfCraftApp> {
     });
     h.run_steps(4);
     h
-}
-
-fn wait_for(h: &mut Harness<'static, PdfCraftApp>, description: &str, ready: impl Fn(&PdfCraftApp) -> bool) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while !ready(h.state()) {
-        assert!(std::time::Instant::now() < deadline, "timed out waiting for {description}");
-        h.step();
-        std::thread::yield_now();
-    }
 }
 
 /// Commands that open a native file picker can't run headless.
@@ -193,9 +186,13 @@ fn a_tool_chosen_with_no_document_asks_for_one_and_runs_on_it() {
     h.run_steps(2);
     h.state_mut().run_command("export.text");
     assert!(h.state().toast.as_ref().is_none_or(|t| t.0 != "Open a document first"));
-    wait_for(&mut h, "picked document and export dialog", |app| app.active.is_some() && matches!(app.dialog, Some(Dialog::Export(_))));
+    support::wait_until(&mut h, "picked document and chosen tool", |app| app.active.is_some() && matches!(app.dialog, Some(Dialog::Export(_))));
     assert!(h.state().active.is_some(), "the picked file is open");
     assert!(matches!(h.state().dialog, Some(Dialog::Export(_))), "and the tool runs on it: {:?}", h.state().dialog);
+    let (_, id) = h.state().active_ids().unwrap();
+    let doc = h.state().session.get(id).unwrap();
+    assert_eq!(doc.name, "picked.pdf");
+    assert_eq!(doc.bytes.as_slice(), fixture(2).as_slice());
     // Cancelled: nothing opens and nothing runs.
     let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_eframe(|_cc| {
         let mut app = PdfCraftApp::new();
@@ -295,9 +292,11 @@ fn the_open_recent_menu_lists_files_and_opens_one() {
     h.run_steps(3);
     h.get_by_label("Open Recent ⏵").hover();
     h.run_steps(3);
+    let original = h.state().views[0].id;
     h.get_by_label_contains("recent.pdf").click();
-    wait_for(&mut h, "recent document", |app| {
+    support::wait_until(&mut h, "recent document", |app| {
         app.views.len() == 2
+            && app.password_prompt.is_none()
             && app.active.and_then(|index| app.views.get(index)).and_then(|view| app.session.get(view.id)).and_then(|doc| doc.path.as_deref())
                 == Some(path.as_str())
     });
@@ -305,6 +304,9 @@ fn the_open_recent_menu_lists_files_and_opens_one() {
     assert_eq!(app.views.len(), 2, "the recent file opened in a new tab");
     let active = app.active.unwrap();
     assert_eq!(app.session.get(app.views[active].id).and_then(|d| d.path.as_deref()), Some(path.as_str()), "the active tab is the recent file");
+    assert_eq!(app.session.get(app.views[active].id).unwrap().bytes.as_slice(), fixture(2).as_slice());
+    assert!(app.views.iter().any(|view| view.id == original));
+    assert_eq!(app.session.get(original).unwrap().bytes.as_slice(), fixture(3).as_slice());
 }
 
 #[test]
@@ -592,4 +594,46 @@ fn palette_ime_outside_click_closes_without_running_a_command() {
     assert!(!h.state().palette_open);
     assert!(h.state().palette_query.is_empty());
     assert_eq!(h.state().session.get(h.state().views[0].id).unwrap().info.pages[0].rotation, 0);
+}
+
+/// Ctrl+Tab and Ctrl+Shift+Tab step through the tabs in the strip's order, wrap around at either
+/// end and include the Combine files tab after the documents (#1542). A Windows or Linux Ctrl
+/// press is both `ctrl` and `command`.
+#[test]
+fn ctrl_tab_steps_through_the_tabs_in_order_and_wraps_around() {
+    let mut h = harness();
+    h.state_mut().open_bytes("second.pdf", None, fixture(1)).unwrap();
+    h.state_mut().open_bytes("third.pdf", None, fixture(1)).unwrap();
+    h.run_steps(3);
+    let ctrl = Modifiers::CTRL | Modifiers::COMMAND;
+    let press = |h: &mut Harness<'static, PdfCraftApp>, modifiers: Modifiers| {
+        h.key_press_modifiers(modifiers, Key::Tab);
+        h.run_steps(2);
+        h.state().active
+    };
+    assert_eq!(h.state().active, Some(2));
+    assert_eq!(press(&mut h, ctrl), Some(0), "the last tab wraps to the first");
+    assert_eq!(press(&mut h, ctrl), Some(1));
+    assert_eq!(press(&mut h, ctrl | Modifiers::SHIFT), Some(0));
+    assert_eq!(press(&mut h, ctrl | Modifiers::SHIFT), Some(2), "the first tab wraps to the last");
+    // The order is the one on screen, after the tabs are moved.
+    let ids: Vec<_> = h.state().views.iter().map(|v| v.id).collect();
+    h.state_mut().move_tab(2, 0);
+    h.run_steps(2);
+    assert_eq!(h.state().active_ids().map(|(_, id)| id), Some(ids[2]));
+    press(&mut h, ctrl);
+    assert_eq!(h.state().active_ids().map(|(_, id)| id), Some(ids[0]));
+    // Combine files comes after the documents.
+    h.state_mut().execute("page.combine");
+    h.run_steps(2);
+    assert!(h.state().combine_showing());
+    assert_eq!(press(&mut h, ctrl), Some(0), "Combine files wraps to the first document");
+    assert_eq!(press(&mut h, ctrl | Modifiers::SHIFT), None);
+    assert!(h.state().combine_showing(), "back from the first document is Combine files");
+    // Plain Tab still belongs to keyboard focus, not to the tabs.
+    press(&mut h, Modifiers::NONE);
+    assert!(h.state().combine_showing());
+    for doc in h.state().session.docs() {
+        assert!(!doc.dirty, "switching tabs changes no document");
+    }
 }
