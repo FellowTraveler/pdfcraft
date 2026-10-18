@@ -129,13 +129,16 @@ mod tests {
         let mut file = std::fs::OpenOptions::new().create_new(true).write(true).open(&path).unwrap();
         file.write_all(include_bytes!("../../../crates/ui-egui/tests/data/form.pdf")).unwrap();
         drop(file);
+        let second_path = path.with_extension("second.pdf");
+        std::fs::copy(&path, &second_path).unwrap();
         let text = path.to_str().unwrap();
+        let second = second_path.to_str().unwrap();
         for enabled in [false, true] {
             let mut app = PdfCraftApp::new();
             app.set_option("default-layout", "single").unwrap();
             app.open_bytes("restored.pdf", None, include_bytes!("../../../crates/ui-egui/tests/data/form.pdf").to_vec()).unwrap();
             let restored = app.views[0].id;
-            open_files(&mut app, &[text.into(), text.into()], enabled);
+            open_files(&mut app, &[text.into(), second.into()], enabled);
             assert_eq!(app.views.len(), 3);
             assert_eq!(app.views[0].id, restored);
             assert_eq!(app.views[0].layout, pdfcraft_ui_egui::canvas::PageLayout::Single);
@@ -164,6 +167,7 @@ mod tests {
             assert_eq!(app.views.len(), 3);
         }
         std::fs::remove_file(path).unwrap();
+        std::fs::remove_file(second_path).unwrap();
     }
 
     #[test]
@@ -171,10 +175,12 @@ mod tests {
         use pdfcraft_ui_egui::canvas::PageLayout;
         let path = std::env::temp_dir().join(format!("pdfcraft-explicit-layout-{}.pdf", std::process::id()));
         std::fs::write(&path, include_bytes!("../../../crates/ui-egui/tests/data/form.pdf")).unwrap();
-        let name = path.to_str().unwrap();
+        let second_path = path.with_extension("second.pdf");
+        std::fs::copy(&path, &second_path).unwrap();
+        let names = [path.to_str().unwrap(), second_path.to_str().unwrap()];
         for prefix in [["--two-paged", "--layout", "single"], ["--layout", "single", "--two-paged"]] {
             for count in [1, 2] {
-                let args = Arguments::parse(prefix.into_iter().chain(std::iter::repeat_n(name, count)).map(str::to_owned));
+                let args = Arguments::parse(prefix.into_iter().chain(names.iter().take(count).copied()).map(str::to_owned));
                 let mut app = PdfCraftApp::new();
                 app.set_option("default-layout", "continuous").unwrap();
                 app.open_bytes("restored.pdf", None, include_bytes!("../../../crates/ui-egui/tests/data/form.pdf").to_vec()).unwrap();
@@ -193,6 +199,33 @@ mod tests {
                 assert!(app.view_defaults.continuous);
             }
         }
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_file(second_path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod repeated_file_tests {
+    use super::*;
+
+    #[test]
+    fn a_repeated_file_reuses_its_tab_and_receives_the_launch_override() {
+        use pdfcraft_ui_egui::canvas::PageLayout;
+        let path = std::env::temp_dir().join(format!("pdfcraft-repeated-startup-{}.pdf", std::process::id()));
+        std::fs::write(&path, include_bytes!("../../../crates/ui-egui/tests/data/form.pdf")).unwrap();
+        let name = path.to_str().unwrap().to_string();
+        let mut app = PdfCraftApp::new();
+        app.set_option("default-layout", "continuous").unwrap();
+        app.open_path(&name);
+        let original = app.views[0].id;
+        open_files(&mut app, &[name.clone(), name], true);
+        assert_eq!(app.views.len(), 1);
+        assert_eq!(app.views[0].id, original);
+        assert_eq!(app.views[0].layout, PageLayout::TwoUp);
+        assert!(!app.views[0].continuous());
+        app.set_launch_layout("single").unwrap();
+        assert_eq!(app.views[0].layout, PageLayout::Single);
+        assert!(app.view_defaults.continuous);
         std::fs::remove_file(path).unwrap();
     }
 }
