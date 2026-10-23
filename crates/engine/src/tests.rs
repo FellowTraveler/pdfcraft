@@ -539,6 +539,20 @@ fn saving_after_deleting_pages_from_a_signed_file_stays_incremental() {
 }
 
 #[test]
+fn saving_after_a_batch_that_deletes_pages_rewrites_the_file() {
+    let (mut s, id) = session_with(6);
+    let original = s.save_bytes(id).unwrap();
+    let batch = Edit::Batch {
+        label: "Delete and rotate".into(),
+        edits: vec![Edit::DeletePages { pages: vec![1, 2, 3, 4] }, Edit::RotatePages { pages: vec![0], degrees: 90 }],
+    };
+    s.apply(id, batch).unwrap();
+    let saved = s.save_bytes(id).unwrap();
+    assert!(!saved.starts_with(original.as_slice()), "a full rewrite, not an update appended to the old file");
+    assert!(!contains(&saved, b"Page 3"), "a deleted page's text is not left in an earlier revision");
+}
+
+#[test]
 fn saving_without_deleting_pages_stays_incremental() {
     let (mut s, id) = session_with(3);
     let original = s.save_bytes(id).unwrap();
