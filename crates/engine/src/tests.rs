@@ -546,6 +546,7 @@ fn saving_without_deleting_pages_stays_incremental() {
     let saved = s.save_bytes(id).unwrap();
     assert!(saved.starts_with(original.as_slice()), "an edit that deletes nothing is still appended");
 }
+
 #[test]
 fn metadata_edit_keeps_the_renderer_without_changing_page_content() {
     let (mut s, id) = session_with(1);
