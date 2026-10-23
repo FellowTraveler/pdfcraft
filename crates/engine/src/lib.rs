@@ -2888,6 +2888,15 @@ fn run_edit(doc: &mut pdfcraft_cos::Document, edit: &Edit, cx: &mut EditCtx) -> 
     Ok(())
 }
 
+/// Whether the edit, or any edit inside a batch, deletes pages.
+fn deletes_pages(edit: &Edit) -> bool {
+    match edit {
+        Edit::DeletePages { .. } => true,
+        Edit::Batch { edits, .. } => edits.iter().any(deletes_pages),
+        _ => false,
+    }
+}
+
 /// The comment list, read from the object graph (as `inspect` lists comments).
 fn comment_list(doc: &pdfcraft_cos::Document) -> Vec<pdfcraft_render::Annotation> {
     pdfcraft_annot::summaries(doc)
@@ -3947,7 +3956,7 @@ impl Session {
         // So does any edit to a file rebuilt from object headers: it has no chain to append to.
         // Deleted pages are freed, but an incremental save keeps them (and their text) in the
         // earlier revision and the file does not shrink (#3407): rewrite an unsigned file in full.
-        if !signed && matches!(edit, Edit::DeletePages { .. }) {
+        if !signed && deletes_pages(&edit) {
             next.require_full_save();
         }
         let rewrites = |c: &pdfcraft_cos::Document| c.full_save_required() || c.encryption_changed();
