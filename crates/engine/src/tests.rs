@@ -545,10 +545,7 @@ fn saving_after_a_batch_that_deletes_pages_rewrites_the_file() {
     let batch = Edit::Batch {
         label: "Delete and rotate".into(),
         edits: vec![
-            Edit::Batch {
-                label: "Delete pages".into(),
-                edits: vec![Edit::DeletePages { pages: vec![1, 2, 3, 4] }],
-            },
+            Edit::Batch { label: "Delete pages".into(), edits: vec![Edit::DeletePages { pages: vec![1, 2, 3, 4] }] },
             Edit::RotatePages { pages: vec![0], degrees: 90 },
         ],
     };
