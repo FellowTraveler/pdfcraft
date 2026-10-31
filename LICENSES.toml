@@ -16,7 +16,7 @@ sha256 = "cd7032ea33b71427f188e34ffb4aee9d6868a57fd196037c5c8b2be03a2a0352"
 [[document]]
 source = "NOTICE"
 destination = "NOTICE"
-sha256 = "40c86b3b25c603fcc0ef7918c29caf55906e09c1a9f7e853fe0765e5fe24ca5e"
+sha256 = "9f854f730719af962cd840529324d089e05e68a30bd245c50e33f96e009b4314"
 
 [[document]]
 source = "assets/app-icon/LICENSE-document.txt"
@@ -110,6 +110,18 @@ source = "vendor/hayro-interpret/assets/LICENSE_FOXIT"
 destination = "vendor/hayro-interpret/assets/LICENSE_FOXIT"
 sha256 = "b578cdd2345840ada550bd12519533812320d5f1d21cf4c1c7e1b1b0a31c98b7"
 
+[[document]]
+source = "vendor/hayro-cmap/assets/LICENSE.txt"
+licences = ["BSD-3-Clause"]
+destination = "vendor/hayro-cmap/assets/LICENSE.txt"
+sha256 = "742665db9c8e1bc72603c6d319ca3e90b83bd6d95202f0cd4ef11068a07a9c29"
+
+[[document]]
+source = "vendor/vello_common/LICENSE-MIT"
+licences = ["MIT"]
+destination = "vendor/vello_common/LICENSE-MIT"
+sha256 = "adf157330f722fe7cfd5964a2a6974eff851b718228c6735724a11706e6f4dec"
+
 [[bundled]]
 crate = "epaint_default_fonts"
 path = "fonts/Ubuntu-Light.ttf"
@@ -135,10 +147,10 @@ licence = "MIT"
 documents = ["licenses/egui-emoji-icon-font-mit-license.txt"]
 
 [[bundled]]
-crate = "hayro-cmap"
-path = "assets/cmaps.brotli"
-licence = "BSD-3-Clause"
-documents = ["licenses/CMap-LICENSE.txt"]
+crate = "epaint_default_fonts"
+path = "fonts/egui-icons.ttf"
+licence = "MIT"
+documents = ["licenses/egui-emoji-icon-font-mit-license.txt"]
 
 [[bundled]]
 crate = "hayro-interpret"
