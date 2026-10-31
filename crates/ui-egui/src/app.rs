@@ -134,6 +134,10 @@ impl PdfCraftApp {
             pending_opens: Vec::new(),
             #[cfg(not(target_arch = "wasm32"))]
             next_open_token: 0,
+            #[cfg(not(target_arch = "wasm32"))]
+            launch_layout: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            launch_display_target: None,
             #[cfg(all(test, not(target_arch = "wasm32")))]
             open_prepare_gate: None,
             pinned: Default::default(),

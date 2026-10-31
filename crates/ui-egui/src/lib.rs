@@ -239,6 +239,7 @@ struct PendingOpen {
     after_open: Option<pdfcraft_render::RemoteDestination>,
     recovered: Option<RecoveryMeta>,
     then: Option<&'static str>,
+    display_override: Option<(canvas::PageLayout, bool)>,
 }
 
 pub struct PdfCraftApp {
@@ -370,6 +371,11 @@ pub struct PdfCraftApp {
     pending_opens: Vec<PendingOpen>,
     #[cfg(not(target_arch = "wasm32"))]
     next_open_token: u64,
+    /// Explicit CLI layout waits for flagged launch opens, never targeting restored tabs.
+    #[cfg(not(target_arch = "wasm32"))]
+    launch_layout: Option<(canvas::PageLayout, bool)>,
+    #[cfg(not(target_arch = "wasm32"))]
+    launch_display_target: Option<DocId>,
     #[cfg(all(test, not(target_arch = "wasm32")))]
     open_prepare_gate: Option<std::sync::Arc<open_worker::PrepareGate>>,
     /// Folders pinned to Home, and what they held when last listed.
