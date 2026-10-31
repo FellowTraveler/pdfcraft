@@ -890,8 +890,8 @@ milestone = "M3"
 status = "shipped"
 commands = ["view.layout.two_up"]
 tools = []
-evidence = ["crates/ui-egui/tests/it/view.rs::two_up_layout_places_pages_side_by_side", "crates/ui-egui/tests/it/viewer.rs::two_page_view_steps_a_spread_at_a_time"]
-notes = "next/previous page step a spread at a time"
+evidence = ["crates/ui-egui/tests/it/view.rs::two_up_layout_places_pages_side_by_side", "crates/ui-egui/tests/it/viewer.rs::two_page_view_steps_a_spread_at_a_time", "apps/pdfcraft/src/startup.rs::startup_override_is_per_file_and_does_not_persist", "crates/ui-egui/src/platform/open_worker/tests.rs::flagged_startup_opens_wait_for_password_ownership_before_the_first_frame"]
+notes = "Next/previous page step a spread at a time. Optional desktop --two-paged launches named PDFs in noncontinuous two-page view without changing saved defaults or unrelated restored tabs. Explicit --layout wins after flagged opens settle, including password retries; repeated files reuse their tab. This is a launch override, not a declarative configuration module."
 
 [[feature]]
 id = "view.layout-two-up-scrolling"
