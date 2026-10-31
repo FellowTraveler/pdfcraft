@@ -10,6 +10,7 @@ pub(super) struct Arguments {
     pub new_window: bool,
     pub two_paged: bool,
     pub version: bool,
+    pub help: bool,
 }
 
 impl Arguments {
@@ -24,6 +25,10 @@ impl Arguments {
             match a.as_str() {
                 "--version" => {
                     parsed.version = true;
+                    break;
+                }
+                "-h" | "--help" => {
+                    parsed.help = true;
                     break;
                 }
                 "--control" => parsed.control_file = args.next(),
@@ -111,6 +116,14 @@ mod tests {
         assert!(!parsed.may_hand_off());
         let version = parse(&["--two-paged", "--version", "ignored.pdf"]);
         assert!(version.version && version.files.is_empty());
+    }
+
+    #[test]
+    fn help_keeps_the_headless_early_exit() {
+        for flag in ["-h", "--help"] {
+            let args = parse(&["--two-paged", flag, "ignored.pdf"]);
+            assert!(args.help && args.files.is_empty());
+        }
     }
 
     #[test]
