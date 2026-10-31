@@ -245,6 +245,11 @@ fn check(root: &Path, docs: &Documents, attribution: &assets::Manifest) -> Vec<S
             problems.push(format!("{}: Lucide collection must credit ISC and Feather MIT", a.path));
         }
     }
+    check_model_metadata(attribution, &mut problems);
+    problems
+}
+
+fn check_model_metadata(attribution: &assets::Manifest, problems: &mut Vec<String>) {
     let mut model_paths = BTreeSet::new();
     for f in attribution.fetched.iter().filter(|f| f.kind == "model") {
         if [f.title.as_str(), &f.author, &f.source, &f.usage, &f.licence].iter().any(|v| v.trim().is_empty())
@@ -265,7 +270,6 @@ fn check(root: &Path, docs: &Documents, attribution: &assets::Manifest) -> Vec<S
             }
         }
     }
-    problems
 }
 
 #[cfg(test)]
