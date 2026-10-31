@@ -88,6 +88,7 @@ fn scroll_down(h: &mut Harness<'static, PdfCraftApp>, points: f32) {
         delta: egui::vec2(0.0, -points),
         phase: egui::TouchPhase::Move,
         modifiers: egui::Modifiers::NONE,
+        source: egui::MouseWheelSource::Unknown,
     });
     h.run_steps(12);
 }
